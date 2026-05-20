@@ -19,7 +19,6 @@ in
 
   home.packages = [
     pkgs.eza
-    pkgs.claude-code
   ] ++ lib.optionals isGui [
     pkgs.obsidian
   ];
@@ -75,6 +74,11 @@ in
   programs.starship = {
     enable = true;
     enableNushellIntegration = true;
+    settings = {
+      jujutsu_status = {
+        disabled = false;
+      };
+    };
   };
 
   programs.zoxide = {
@@ -95,7 +99,6 @@ in
     settings = {
       default_shell = "${pkgs.nushell}/bin/nu";
       default_layout = "compact";
-      default_mode = "locked";
       show_startup_tips = false;
     };
   };
@@ -123,6 +126,25 @@ in
     enableNushellIntegration = true;
     nix-direnv.enable = true;
   };
+
+  home.file.".config/bash_env.sh" = {
+    executable = true;
+    text = ''
+      command -v direnv &>/dev/null && eval "$(direnv export bash 2>/dev/null)"
+    '';
+  };
+
+  programs.claude-code = {
+    enable = true;
+    settings = {
+      theme = "dark";
+      enabledPlugins."github@claude-plugins-official" = true;
+      env.BASH_ENV = "${config.home.homeDirectory}/.config/bash_env.sh";
+    };
+  };
+
+  nix.package = pkgs.nix;
+  nix.settings.experimental-features = [ "nix-command" "flakes" ];
 
   # Let Home Manager install and manage itself.
   programs.home-manager.enable = true;
