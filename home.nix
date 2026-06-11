@@ -5,11 +5,30 @@ let
   sessionVars = {
     EDITOR = "hx";
   };
+  pkgs-unstable = import <nixpkgs-unstable> {
+    system = builtins.currentSystem;
+    config.allowUnfreePredicate = pkg: builtins.elem (lib.getName pkg) [
+      "claude-code"
+      "obsidian"
+      "slack"
+      "spotify"
+      "vscode"
+    ];
+  };
 in
 {
   nixpkgs.config.allowUnfreePredicate = pkg: builtins.elem (lib.getName pkg) [
     "claude-code"
     "obsidian"
+    "slack"
+    "spotify"
+    "vscode"
+  ];
+
+  nixpkgs.overlays = [
+    (final: prev: {
+      claude-code = pkgs-unstable.claude-code;
+    })
   ];
 
   home.username = "salust";
@@ -19,9 +38,28 @@ in
 
   home.packages = [
     pkgs.eza
+    pkgs.htop
+    pkgs.ripgrep
+    (pkgs.writeShellScriptBin "nix-init" ''
+      echo "use nix" > .envrc
+      direnv allow
+    '')
   ] ++ lib.optionals isGui [
     pkgs.obsidian
+    pkgs.slack
+    pkgs.spotify
+    pkgs.sweethome3d.application
+    pkgs.telegram-desktop
   ];
+
+  programs.vscode = lib.mkIf isGui {
+    enable = true;
+    package = pkgs.vscode;
+    profiles.default.userSettings = {
+      "claudeCode.preferredLocation" = "panel";
+      "claudeCode.claudeProcessWrapper" = "${config.home.homeDirectory}/.nix-profile/bin/claude";
+    };
+  };
 
   home.file.".terminfo/x/xterm-ghostty".source = "${pkgs.ghostty}/share/terminfo/x/xterm-ghostty";
 
@@ -30,13 +68,15 @@ in
 
     ## System configuration
 
-    This machine is managed with **Home Manager (Nix)**. The configuration file is:
+    This machine runs **NixOS** and is primarily managed with **Home Manager**. The main configuration file is:
 
     ```
     ~/.config/home-manager/home.nix
     ```
 
     When asked to install packages, change shell settings, configure tools, or adjust the environment, prefer editing `home.nix` and applying with `home-manager switch` (aliased as `hms`).
+
+    For system-level concerns (services, kernel modules, hardware), the NixOS entrypoint is `/etc/nixos/configuration.nix` (applied with `sudo nixos-rebuild switch`), but this should rarely be needed.
 
     ## Project-specific dependencies
 
@@ -73,7 +113,7 @@ in
 
   programs.starship = {
     enable = true;
-    enableNushellIntegration = true;
+    enableFishIntegration = true;
     settings = {
       jujutsu_status = {
         disabled = false;
@@ -83,13 +123,13 @@ in
 
   programs.zoxide = {
     enable = true;
-    enableNushellIntegration = true;
+    enableFishIntegration = true;
   };
 
   programs.ghostty = lib.mkIf isGui {
     enable = true;
     settings = {
-      command = "${pkgs.nushell}/bin/nu";
+      command = "${pkgs.fish}/bin/fish";
       background-opacity = 0.9;
     };
   };
@@ -97,41 +137,23 @@ in
   programs.zellij = {
     enable = true;
     settings = {
-      default_shell = "${pkgs.nushell}/bin/nu";
+      default_shell = "${pkgs.fish}/bin/fish";
       default_layout = "compact";
       show_startup_tips = false;
     };
   };
 
-  programs.nushell = {
+  programs.fish = {
     enable = true;
-    environmentVariables = sessionVars;
     shellAliases = {
       hms = "home-manager switch";
     };
-    extraConfig = ''
-      source ${pkgs.runCommand "jj-completions-nu" { buildInputs = [ pkgs.jujutsu ]; } ''
-        mkdir -p $out/share/nushell/vendor_autoload
-        jj util completion nushell > $out/share/nushell/vendor_autoload/jj.nu
-      ''}/share/nushell/vendor_autoload/jj.nu
-      source ${pkgs.runCommand "just-completions-nu" { buildInputs = [ pkgs.just ]; } ''
-        mkdir -p $out/share/nushell/vendor_autoload
-        just --completions nushell > $out/share/nushell/vendor_autoload/just.nu
-      ''}/share/nushell/vendor_autoload/just.nu
-    '';
   };
 
   programs.direnv = {
     enable = true;
-    enableNushellIntegration = true;
+    enableFishIntegration = true;
     nix-direnv.enable = true;
-  };
-
-  home.file.".config/bash_env.sh" = {
-    executable = true;
-    text = ''
-      command -v direnv &>/dev/null && eval "$(direnv export bash 2>/dev/null)"
-    '';
   };
 
   programs.claude-code = {
@@ -140,8 +162,11 @@ in
       theme = "dark";
       enabledPlugins."github@claude-plugins-official" = true;
       env.BASH_ENV = "${config.home.homeDirectory}/.config/bash_env.sh";
+      permissions.allow = [ "Read" ];
     };
   };
+
+  home.enableNixpkgsReleaseCheck = false;
 
   nix.package = pkgs.nix;
   nix.settings.experimental-features = [ "nix-command" "flakes" ];
