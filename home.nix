@@ -41,7 +41,7 @@ in
     pkgs.htop
     pkgs.ripgrep
     pkgs.awscli2
-    pkgs.gh
+    pkgs.starship-jj
     (pkgs.writeShellScriptBin "nix-init" ''
       echo "use nix" > .envrc
       direnv allow
@@ -81,12 +81,33 @@ in
 
     For system-level concerns (services, kernel modules, hardware), the NixOS entrypoint is `/etc/nixos/configuration.nix` (applied with `sudo nixos-rebuild switch`), but this should rarely be needed.
 
+    ## Version control: prefer jj over git
+
+    I use **Jujutsu (`jj`)**. Prefer it to `git` for version-control work.
+
+    Before running any VCS command, check whether the repo is jj-backed (`jj root`, or look for `.jj/`). If it is, use jj — including in **colocated** repos that have both `.jj/` and `.git/`, where jj is the source of truth and mutating git commands (`git add`, `git commit`, `git checkout`, `git rebase`, `git reset`, `git stash`) desynchronize jj's state. Read-only git (`git log`, `git show`, `git diff`) is fine anywhere.
+
+    The `jj` skill has the mental model, the git-to-jj translation table, and the recipes — consult it rather than translating git habits command by command.
+
+    Two boundaries:
+
+    - In a repo that is **only** git, use git. Don't run `jj git init --colocate` to convert it without asking, since that changes the repo for anyone else working in it.
+    - For **new** repos, prefer starting them with `jj git init --colocate`, which keeps git interop for tooling and remotes.
+
     ## Project-specific dependencies
 
     Projects use a `default.nix` (or `shell.nix`) in the project root for per-project dependencies, managed via **direnv** (`use nix` in `.envrc`). When a project needs a tool or library, add it to that project's `default.nix` rather than to `home.nix`.
+
+    Exception: for a genuinely one-off need (a script I'll run once), use ad-hoc `nix-shell -p <pkg> --run '...'` rather than adding a permanent entry anywhere.
   '';
 
   home.sessionVariables = sessionVars;
+
+  programs.gh = {
+    enable = true;
+    extensions = [ pkgs.gh-stack ];
+    settings.aliases.co = "pr checkout";
+  };
 
   programs.git = {
     enable = true;
@@ -112,6 +133,51 @@ in
         key = "D2CF0041485B408D";
         behavior = "own";
       };
+
+      # `jj stack-pr [REVSET] [gh-stack flags...]` — push one bookmark per change
+      # in REVSET (default `trunk()..@`), then wire the branches into a GitHub
+      # stack. `gh stack link` is the only gh-stack subcommand that keeps its
+      # hands off local git state, so jj stays the source of truth.
+      aliases.stack-pr = [
+        "util"
+        "exec"
+        "--"
+        "bash"
+        "-c"
+        ''
+          set -euo pipefail
+
+          range='trunk()..@'
+          case "''${1-}" in
+            "" | -*) ;;
+            *)
+              range=$1
+              shift
+              ;;
+          esac
+
+          # `jj git push` refuses undescribed commits, so drop them from the range
+          # (this is usually just an empty `@`).
+          pushable="($range) & description(regex:'.')"
+          if [ "$(jj log --no-graph --no-pager -r "$pushable" -T '"x\n"' | wc -l)" -lt 2 ]; then
+            echo "stack-pr: need at least 2 described changes in $range" >&2
+            exit 1
+          fi
+
+          base=$(jj log --no-graph --no-pager -r 'trunk()' \
+            -T 'local_bookmarks.map(|b| b.name()).join("")')
+          jj git push -c "$pushable"
+
+          # Bookmark names come from templates.git_push_bookmark, so they are
+          # derived from change IDs and survive amends: PRs update in place.
+          layers=($(jj log --no-graph --no-pager --reversed -r "($pushable) & bookmarks()" \
+            -T 'local_bookmarks.map(|b| b.name()).join(" ") ++ " "'))
+
+          echo "stacking onto $base (bottom to top): ''${layers[*]}"
+          gh stack link "''${layers[@]}" --base "$base" "$@"
+        ''
+        "jj-stack-pr"
+      ];
     };
   };
 
@@ -127,11 +193,81 @@ in
     enable = true;
     enableFishIntegration = true;
     settings = {
-      jujutsu_status = {
-        disabled = false;
+      # jj status via starship-jj. `shell` is the binary itself, so no shell is
+      # spawned; outside a jj repo it exits non-zero and starship hides the module.
+      custom.jj = {
+        command = "prompt";
+        shell = [ "${pkgs.starship-jj}/bin/starship-jj" "--ignore-working-copy" "starship" ];
+        format = "$output";
+        ignore_timeout = true;
+        use_stdin = false;
+        when = true;
       };
+
+      # starship-jj covers VCS status; the git modules would only duplicate it
+      # in colocated repos.
+      git_branch.disabled = true;
+      git_commit.disabled = true;
+      git_metrics.disabled = true;
+      git_state.disabled = true;
+      git_status.disabled = true;
     };
   };
+
+  # starship-jj's own config; `starship-jj starship config default` prints this.
+  xdg.configFile."starship-jj/starship-jj.toml".source =
+    (pkgs.formats.toml { }).generate "starship-jj.toml" {
+      module_separator = " ";
+      reset_color = false;
+
+      bookmarks = {
+        search_depth = 100;
+        exclude = [ ];
+      };
+
+      module = [
+        {
+          type = "Symbol";
+          symbol = "󱗆 ";
+          color = "Blue";
+        }
+        {
+          type = "Bookmarks";
+          separator = " ";
+          color = "Magenta";
+          behind_symbol = "⇡";
+          surround_with_quotes = true;
+          ignore_empty_commits = "None";
+        }
+        {
+          type = "Commit";
+          previous_message_symbol = "⇣";
+          max_length = 24;
+          show_previous_if_empty = false;
+          empty_text = "(no description set)";
+          surround_with_quotes = true;
+          non_unique.color = "Black";
+        }
+        {
+          type = "State";
+          separator = " ";
+          conflict = { disabled = false; text = "(CONFLICT)"; color = "Red"; };
+          divergent = { disabled = false; text = "(DIVERGENT)"; color = "Cyan"; };
+          empty = { disabled = false; text = "(EMPTY)"; color = "Yellow"; };
+          immutable = { disabled = false; text = "(IMMUTABLE)"; color = "Yellow"; };
+          hidden = { disabled = false; text = "(HIDDEN)"; color = "Yellow"; };
+        }
+        {
+          type = "Metrics";
+          template = "[{changed} {added}{removed}]";
+          hide_if_empty = false;
+          color = "Magenta";
+          changed_files = { prefix = ""; suffix = ""; color = "Cyan"; };
+          added_lines = { prefix = "+"; suffix = ""; color = "Green"; };
+          removed_lines = { prefix = "-"; suffix = ""; color = "Red"; };
+        }
+      ];
+    };
 
   programs.zoxide = {
     enable = true;
@@ -172,34 +308,19 @@ in
     enable = true;
     settings = {
       theme = "dark";
-      enabledPlugins."github@claude-plugins-official" = false;
       enabledPlugins."mattpocock-skills@mattpocock" = true;
       enabledPlugins."slack@claude-plugins-official" = true;
+      enabledPlugins."skill-creator@claude-plugins-official" = true;
       env.BASH_ENV = "${config.home.homeDirectory}/.config/bash_env.sh";
       permissions.allow = [ "Read" "WebSearch" "WebFetch" ];
-      enabledMcpjsonServers = [ "github" "linear-server" ];
     };
-    mcpServers = {
-      github = {
-        type = "http";
-        url = "https://api.githubcopilot.com/mcp";
+    marketplaces = {
+      mattpocock = pkgs.fetchFromGitHub {
+        owner = "mattpocock";
+        repo = "skills";
+        rev = "2ab958093e83e0ec752e6c1c5932da465bf23e0c";
+        sha256 = "1w18xwkni55qh2n6bxw755vr5hdkvjw8xnm42qzmhnh9xgm4c2vm";
       };
-      linear-server = {
-        type = "http";
-        url = "https://mcp.linear.app/mcp";
-      };
-    };
-    marketplaces.mattpocock = pkgs.fetchFromGitHub {
-      owner = "mattpocock";
-      repo = "skills";
-      rev = "2ab958093e83e0ec752e6c1c5932da465bf23e0c";
-      sha256 = "1w18xwkni55qh2n6bxw755vr5hdkvjw8xnm42qzmhnh9xgm4c2vm";
-    };
-    marketplaces.claude-plugins-official = pkgs.fetchFromGitHub {
-      owner = "anthropics";
-      repo = "claude-plugins-official";
-      rev = "10dee3b37671692f9c2437988b68faa5e1256b38";
-      sha256 = "1lpdvwpg7lyijk27ljhmrxgc5mxn7hz8q3ypw2gpnslwppra02br";
     };
   };
 
