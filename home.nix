@@ -40,11 +40,14 @@ in
     pkgs.eza
     pkgs.htop
     pkgs.ripgrep
+    pkgs.awscli2
+    pkgs.gh
     (pkgs.writeShellScriptBin "nix-init" ''
       echo "use nix" > .envrc
       direnv allow
     '')
   ] ++ lib.optionals isGui [
+    pkgs.evince
     pkgs.obsidian
     pkgs.slack
     pkgs.spotify
@@ -90,7 +93,11 @@ in
     settings.user = {
       name = "Guilherme Stabach Salustiano";
       email = "guissalustiano@gmail.com";
+      signingkey = "D2CF0041485B408D";
     };
+    settings.commit.gpgsign = true;
+    settings.tag.gpgsign = true;
+    settings.gpg.format = "openpgp";
   };
 
   programs.jujutsu = {
@@ -99,6 +106,11 @@ in
       user = {
         name = "Guilherme Stabach Salustiano";
         email = "guissalustiano@gmail.com";
+      };
+      signing = {
+        backend = "gpg";
+        key = "D2CF0041485B408D";
+        behavior = "own";
       };
     };
   };
@@ -160,9 +172,34 @@ in
     enable = true;
     settings = {
       theme = "dark";
-      enabledPlugins."github@claude-plugins-official" = true;
+      enabledPlugins."github@claude-plugins-official" = false;
+      enabledPlugins."mattpocock-skills@mattpocock" = true;
+      enabledPlugins."slack@claude-plugins-official" = true;
       env.BASH_ENV = "${config.home.homeDirectory}/.config/bash_env.sh";
-      permissions.allow = [ "Read" ];
+      permissions.allow = [ "Read" "WebSearch" "WebFetch" ];
+      enabledMcpjsonServers = [ "github" "linear-server" ];
+    };
+    mcpServers = {
+      github = {
+        type = "http";
+        url = "https://api.githubcopilot.com/mcp";
+      };
+      linear-server = {
+        type = "http";
+        url = "https://mcp.linear.app/mcp";
+      };
+    };
+    marketplaces.mattpocock = pkgs.fetchFromGitHub {
+      owner = "mattpocock";
+      repo = "skills";
+      rev = "2ab958093e83e0ec752e6c1c5932da465bf23e0c";
+      sha256 = "1w18xwkni55qh2n6bxw755vr5hdkvjw8xnm42qzmhnh9xgm4c2vm";
+    };
+    marketplaces.claude-plugins-official = pkgs.fetchFromGitHub {
+      owner = "anthropics";
+      repo = "claude-plugins-official";
+      rev = "10dee3b37671692f9c2437988b68faa5e1256b38";
+      sha256 = "1lpdvwpg7lyijk27ljhmrxgc5mxn7hz8q3ypw2gpnslwppra02br";
     };
   };
 
