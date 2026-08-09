@@ -4,32 +4,66 @@ let
   isGui = builtins.pathExists /run/opengl-driver;
   sessionVars = {
     EDITOR = "hx";
+
+    HOME_MANAGER_BACKUP_OVERWRITE = "1";
   };
-  pkgs-unstable = import <nixpkgs-unstable> {
-    system = builtins.currentSystem;
-    config.allowUnfreePredicate = pkg: builtins.elem (lib.getName pkg) [
-      "claude-code"
-      "obsidian"
-      "slack"
-      "spotify"
-      "vscode"
-    ];
+
+  chromePwas = {
+    google-meet = {
+      name = "Google Meet";
+      id = "kjgfgldnnfoeklkmfkjfagphfepbbdan";
+      profile = "Profile 1";
+      categories = [ "Network" "VideoConference" ];
+    };
+    whatsapp-web = {
+      name = "WhatsApp Web";
+      id = "hnpfjngllnobngcgfapefoaidbinmjnm";
+      profile = "Default";
+      categories = [ "Network" "InstantMessaging" ];
+    };
   };
+  iconSizes = [ "32x32" "48x48" "128x128" "256x256" "512x512" ];
+
+  # The launcher and icon set one PWA needs, as paths relative to ~/.local/share.
+  pwaFiles = slug: pwa:
+    let
+      entry = "chrome-${pwa.id}-${lib.replaceStrings [ " " ] [ "_" ] pwa.profile}";
+      item = pkgs.makeDesktopItem {
+        name = entry;
+        desktopName = pwa.name;
+        exec = ''google-chrome-stable "--profile-directory=${pwa.profile}" --app-id=${pwa.id}'';
+        icon = slug;
+        type = "Application";
+        terminal = false;
+        inherit (pwa) categories;
+        # Ties the window to this launcher so it does not appear as a stray Chrome
+        # window in the dock. Chrome uses crx_<app-id> for PWA windows.
+        extraConfig.StartupWMClass = "crx_${pwa.id}";
+      };
+    in
+    {
+      "applications/${entry}.desktop".source = "${item}/share/applications/${entry}.desktop";
+    }
+    // builtins.listToAttrs (map
+      (size: {
+        name = "icons/hicolor/${size}/apps/${slug}.png";
+        value.source = ./icons + "/${slug}/${size}.png";
+      })
+      iconSizes);
+
+  jj-stack-pr = pkgs.writers.writeFishBin "jj-stack-pr"
+    {
+      makeWrapperArgs = [
+        "--prefix"
+        "PATH"
+        ":"
+        (lib.makeBinPath [ config.programs.jujutsu.package pkgs.gh ])
+      ];
+    }
+    (builtins.readFile ./stack-pr.fish);
 in
 {
-  nixpkgs.config.allowUnfreePredicate = pkg: builtins.elem (lib.getName pkg) [
-    "claude-code"
-    "obsidian"
-    "slack"
-    "spotify"
-    "vscode"
-  ];
-
-  nixpkgs.overlays = [
-    (final: prev: {
-      claude-code = pkgs-unstable.claude-code;
-    })
-  ];
+  nixpkgs.config.allowUnfree = true;
 
   home.username = "salust";
   home.homeDirectory = "/home/salust";
@@ -38,6 +72,7 @@ in
 
   home.packages = [
     pkgs.eza
+    pkgs.fd
     pkgs.htop
     pkgs.ripgrep
     pkgs.awscli2
@@ -48,12 +83,30 @@ in
     '')
   ] ++ lib.optionals isGui [
     pkgs.evince
+    pkgs.gimp
+    pkgs.google-chrome
+    pkgs.obs-studio
     pkgs.obsidian
     pkgs.slack
     pkgs.spotify
-    pkgs.sweethome3d.application
     pkgs.telegram-desktop
   ];
+
+  xdg.mimeApps = lib.mkIf isGui {
+    enable = true;
+    defaultApplications = {
+      "application/pdf" = [ "org.gnome.Evince.desktop" ];
+      "x-scheme-handler/claude-cli" = [ "claude-code-url-handler.desktop" ];
+      "x-scheme-handler/slack" = [ "slack.desktop" ];
+      "x-scheme-handler/tg" = [ "org.telegram.desktop.desktop" ];
+      "x-scheme-handler/tonsite" = [ "org.telegram.desktop.desktop" ];
+    };
+  };
+
+  # Chorme PWA
+  xdg.dataFile = lib.mkIf isGui (
+    lib.foldl' lib.mergeAttrs { } (lib.mapAttrsToList pwaFiles chromePwas)
+  );
 
   programs.vscode = lib.mkIf isGui {
     enable = true;
@@ -134,50 +187,7 @@ in
         behavior = "own";
       };
 
-      # `jj stack-pr [REVSET] [gh-stack flags...]` — push one bookmark per change
-      # in REVSET (default `trunk()..@`), then wire the branches into a GitHub
-      # stack. `gh stack link` is the only gh-stack subcommand that keeps its
-      # hands off local git state, so jj stays the source of truth.
-      aliases.stack-pr = [
-        "util"
-        "exec"
-        "--"
-        "bash"
-        "-c"
-        ''
-          set -euo pipefail
-
-          range='trunk()..@'
-          case "''${1-}" in
-            "" | -*) ;;
-            *)
-              range=$1
-              shift
-              ;;
-          esac
-
-          # `jj git push` refuses undescribed commits, so drop them from the range
-          # (this is usually just an empty `@`).
-          pushable="($range) & description(regex:'.')"
-          if [ "$(jj log --no-graph --no-pager -r "$pushable" -T '"x\n"' | wc -l)" -lt 2 ]; then
-            echo "stack-pr: need at least 2 described changes in $range" >&2
-            exit 1
-          fi
-
-          base=$(jj log --no-graph --no-pager -r 'trunk()' \
-            -T 'local_bookmarks.map(|b| b.name()).join("")')
-          jj git push -c "$pushable"
-
-          # Bookmark names come from templates.git_push_bookmark, so they are
-          # derived from change IDs and survive amends: PRs update in place.
-          layers=($(jj log --no-graph --no-pager --reversed -r "($pushable) & bookmarks()" \
-            -T 'local_bookmarks.map(|b| b.name()).join(" ") ++ " "'))
-
-          echo "stacking onto $base (bottom to top): ''${layers[*]}"
-          gh stack link "''${layers[@]}" --base "$base" "$@"
-        ''
-        "jj-stack-pr"
-      ];
+      aliases.stack-pr = [ "util" "exec" "--" "${jj-stack-pr}/bin/jj-stack-pr" ];
     };
   };
 
@@ -311,15 +321,19 @@ in
       enabledPlugins."mattpocock-skills@mattpocock" = true;
       enabledPlugins."slack@claude-plugins-official" = true;
       enabledPlugins."skill-creator@claude-plugins-official" = true;
+      enabledPlugins."github@claude-plugins-official" = true;
       env.BASH_ENV = "${config.home.homeDirectory}/.config/bash_env.sh";
       permissions.allow = [ "Read" "WebSearch" "WebFetch" ];
     };
-    marketplaces = {
-      mattpocock = pkgs.fetchFromGitHub {
-        owner = "mattpocock";
-        repo = "skills";
-        rev = "2ab958093e83e0ec752e6c1c5932da465bf23e0c";
-        sha256 = "1w18xwkni55qh2n6bxw755vr5hdkvjw8xnm42qzmhnh9xgm4c2vm";
+    # The playwright@claude-plugins-official plugin is only this MCP server, but
+    # it runs `npx @playwright/mcp@latest` and then downloads browsers that are
+    # not patched for NixOS. Point the nix build at the Chrome we already have.
+    # The module ships this as the personal plugin ~/.claude/skills/claude-code-home-manager.
+    mcpServers = lib.optionalAttrs isGui {
+      playwright = {
+        type = "stdio";
+        command = "${pkgs.playwright-mcp}/bin/playwright-mcp";
+        args = [ "--executable-path" "${pkgs.google-chrome}/bin/google-chrome-stable" ];
       };
     };
   };
@@ -329,6 +343,5 @@ in
   nix.package = pkgs.nix;
   nix.settings.experimental-features = [ "nix-command" "flakes" ];
 
-  # Let Home Manager install and manage itself.
   programs.home-manager.enable = true;
 }
