@@ -61,6 +61,8 @@ let
       ];
     }
     (builtins.readFile ./stack-pr.fish);
+
+  kotlin-lsp = pkgs.callPackage ./kotlin-lsp.nix { };
 in
 {
   nixpkgs.config.allowUnfree = true;
@@ -77,6 +79,7 @@ in
     pkgs.ripgrep
     pkgs.awscli2
     pkgs.starship-jj
+    kotlin-lsp
     (pkgs.writeShellScriptBin "nix-init" ''
       echo "use nix" > .envrc
       direnv allow
@@ -115,8 +118,16 @@ in
     userSettings = {
       helix_mode = true;
       # The Kotlin extension registers two servers and runs both by default; keep
-      # only JetBrains' kotlin-lsp, which the extension downloads itself.
+      # only JetBrains' kotlin-lsp.
       languages.Kotlin.language_servers = [ "kotlin-lsp" "!kotlin-language-server" ];
+
+      # Use the kotlin-lsp from home.packages rather than the unpatched build the
+      # extension downloads. --stdio is required: the server otherwise listens on
+      # a socket (127.0.0.1:9999) and Zed never connects.
+      lsp.kotlin-lsp.binary = {
+        path = "${kotlin-lsp}/bin/kotlin-lsp";
+        arguments = [ "--stdio" ];
+      };
 
       # Zed builds the project environment by spawning $SHELL, which is bash here,
       # and direnv's hook is only installed for fish (see programs.direnv below).
@@ -134,6 +145,11 @@ in
   # discovers by scanning the conventional locations (~/.jdks among them) rather
   # than from PATH. NixOS has no /usr/lib/jvm, so put one where it will look —
   # otherwise the import dies with "no compatible JDKs found on the machine".
+  #
+  # Still needed even though ./kotlin-lsp.nix hardcodes jdk21 into the launcher:
+  # that only picks the JVM the server process itself runs on. The project JDK
+  # handed to Gradle goes through IntelliJ's own discovery, which is why
+  # intellij.platform.lang.impl.jar has ~/.jdks and /usr/lib/jvm baked in.
   home.file.".jdks/openjdk-21" = lib.mkIf isGui { source = pkgs.jdk21.home; };
 
   programs.vscode = lib.mkIf isGui {
