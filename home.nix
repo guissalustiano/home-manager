@@ -90,6 +90,7 @@ in
     pkgs.slack
     pkgs.spotify
     pkgs.telegram-desktop
+    pkgs.vlc
   ];
 
   xdg.mimeApps = lib.mkIf isGui {
@@ -108,12 +109,41 @@ in
     lib.foldl' lib.mergeAttrs { } (lib.mapAttrsToList pwaFiles chromePwas)
   );
 
+  programs.zed-editor = lib.mkIf isGui {
+    enable = true;
+    extensions = [ "kotlin" ];
+    userSettings = {
+      helix_mode = true;
+      # The Kotlin extension registers two servers and runs both by default; keep
+      # only JetBrains' kotlin-lsp, which the extension downloads itself.
+      languages.Kotlin.language_servers = [ "kotlin-lsp" "!kotlin-language-server" ];
+
+      # Zed builds the project environment by spawning $SHELL, which is bash here,
+      # and direnv's hook is only installed for fish (see programs.direnv below).
+      # "direct" skips the hook entirely: Zed runs `direnv export json` itself, so
+      # language servers and tasks get the project's nix env.
+      load_direnv = "direct";
+
+      # The integrated terminal is a separate path — it execs a shell rather than
+      # importing the project environment, so it needs a shell that has the hook.
+      terminal.shell.program = "${pkgs.fish}/bin/fish";
+    };
+  };
+
+  # kotlin-lsp is an IntelliJ server, and it runs the Gradle import with a JDK it
+  # discovers by scanning the conventional locations (~/.jdks among them) rather
+  # than from PATH. NixOS has no /usr/lib/jvm, so put one where it will look —
+  # otherwise the import dies with "no compatible JDKs found on the machine".
+  home.file.".jdks/openjdk-21" = lib.mkIf isGui { source = pkgs.jdk21.home; };
+
   programs.vscode = lib.mkIf isGui {
     enable = true;
     package = pkgs.vscode;
     profiles.default.userSettings = {
       "claudeCode.preferredLocation" = "panel";
       "claudeCode.claudeProcessWrapper" = "${config.home.homeDirectory}/.nix-profile/bin/claude";
+      "intellij.region" = "americas";
+      "intellij.dataSharing" = "full";
     };
   };
 
@@ -308,8 +338,21 @@ in
     };
   };
 
+  # Ghostty launches fish directly, but $SHELL is still bash, so anything that
+  # honors $SHELL (Zed, VS Code, ssh) gets bash. Let home-manager own .bashrc so
+  # the direnv hook below actually reaches it. initExtra reproduces the PATH line
+  # from the hand-written .bashrc this replaces; it is deliberately not
+  # home.sessionPath, which would also add ~/.local/bin to fish.
+  programs.bash = {
+    enable = true;
+    initExtra = ''
+      export PATH="$HOME/.local/bin:$PATH"
+    '';
+  };
+
   programs.direnv = {
     enable = true;
+    enableBashIntegration = true;
     enableFishIntegration = true;
     nix-direnv.enable = true;
   };

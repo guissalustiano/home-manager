@@ -43,3 +43,7 @@ xmonad/xmonad.hi
 xmonad/xmonad.o
 
 .playwright-mcp/
+
+# nix-build output symlink
+result
+result-*
