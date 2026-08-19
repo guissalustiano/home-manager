@@ -6,6 +6,14 @@ let
     EDITOR = "hx";
 
     HOME_MANAGER_BACKUP_OVERWRITE = "1";
+
+    # context-mode's start.mjs re-execs itself under bun on Linux, to take the
+    # bun:sqlite path in its bundle instead of the better-sqlite3 native module
+    # it would otherwise `npm install` into its own (store, read-only) plugin
+    # directory. It finds bun by probing $BUN_INSTALL/bin/bun and a few fixed
+    # paths, never PATH. Side effect: this is also where `bun add -g` would
+    # install, so global bun installs will fail — use home.packages instead.
+    BUN_INSTALL = "${pkgs.bun}";
   };
 
   chromePwas = {
@@ -63,6 +71,32 @@ let
     (builtins.readFile ./stack-pr.fish);
 
   kotlin-lsp = pkgs.callPackage ./kotlin-lsp.nix { };
+
+  # context-mode keeps bulky tool output out of the context window by running
+  # the work in a sandbox and returning only what the code derived. Upstream
+  # ships its esbuild bundles committed, so the checkout is the plugin.
+  #
+  # Loaded through programs.claude-code.plugins, which links it under
+  # ~/.claude/skills as a personal plugin. The alternative, registering it as
+  # its own single-plugin marketplace, would make home-manager own
+  # ~/.claude/plugins/known_marketplaces.json and drop whatever Claude Code has
+  # added there itself on every switch.
+  context-mode = pkgs.fetchFromGitHub {
+    owner = "mksglu";
+    repo = "context-mode";
+    rev = "v1.0.169";
+    hash = "sha256-1pV56ZB2aqod+C0kb5myuiWLAJ7+opiaurwZZ3BGKYk=";
+  };
+
+  # ponytail is a skill plus three SessionStart/UserPromptSubmit hooks that
+  # inject its ruleset; the hooks are plain node scripts and keep their state in
+  # ~/.claude, so the checkout needs nothing beyond the nodejs added above.
+  ponytail = pkgs.fetchFromGitHub {
+    owner = "DietrichGebert";
+    repo = "ponytail";
+    rev = "v4.9.0";
+    hash = "sha256-8cYggVltBAlZ/Zj4pl1bOu7mQdZFXCmDGW4RSpvRA+w=";
+  };
 in
 {
   nixpkgs.config.allowUnfree = true;
@@ -80,6 +114,12 @@ in
     pkgs.awscli2
     pkgs.starship-jj
     kotlin-lsp
+    # Runtimes for the context-mode plugin. Its plugin.json and every hook
+    # command invoke a bare `node`, so nodejs has to be on PATH; bun is what
+    # node re-execs into (see BUN_INSTALL above) and its sandbox probes PATH
+    # for runtimes, only offering TypeScript when bun is there.
+    pkgs.nodejs
+    pkgs.bun
     (pkgs.writeShellScriptBin "nix-init" ''
       echo "use nix" > .envrc
       direnv allow
@@ -381,9 +421,15 @@ in
       enabledPlugins."slack@claude-plugins-official" = true;
       enabledPlugins."skill-creator@claude-plugins-official" = true;
       enabledPlugins."github@claude-plugins-official" = true;
+      # This plugin is only an lspServers entry that runs bare `kotlin-lsp`
+      # (upstream's README says to get it from brew); it resolves off PATH, which
+      # the kotlin-lsp in home.packages above satisfies.
+      enabledPlugins."kotlin-lsp@claude-plugins-official" = true;
       env.BASH_ENV = "${config.home.homeDirectory}/.config/bash_env.sh";
       permissions.allow = [ "Read" "WebSearch" "WebFetch" ];
     };
+    plugins.context-mode = context-mode;
+    plugins.ponytail = ponytail;
     # The playwright@claude-plugins-official plugin is only this MCP server, but
     # it runs `npx @playwright/mcp@latest` and then downloads browsers that are
     # not patched for NixOS. Point the nix build at the Chrome we already have.
